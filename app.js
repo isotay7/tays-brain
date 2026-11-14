@@ -3,7 +3,7 @@
 /* Tay's Brain. All personal data comes from a private repo at runtime.
    This file holds no names, tokens or content. */
 
-const APP_VERSION = '1.0.0'; // keep in sync with CACHE in sw.js
+const APP_VERSION = '2.0.0'; // keep in sync with CACHE in sw.js
 const API = 'https://api.github.com';
 const DROP_EVERY_DAYS = 2;
 
@@ -16,6 +16,8 @@ const FIELDS = [
   { id: 'thoughts', name: 'Your thoughts' },
 ];
 const FIELD_BY_ID = Object.fromEntries(FIELDS.map((f) => [f.id, f]));
+const STATUSES = ['unread', 'reading', 'learned', 'applied'];
+const STATUS_LABEL = { unread: 'Unread', reading: 'Reading', learned: 'Learned', applied: 'Applied' };
 const VIEWS = ['feed', 'saved', 'thoughts', 'sources', 'settings'];
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
@@ -47,11 +49,13 @@ const state = {
   name: '',
   cards: [],
   sources: {},
-  thoughts: [],
+  thoughts: [], // thoughts and links, newest first
   replyCache: {}, // issue number -> { updatedAt, reply }
-  saved: {},
+  saved: {}, // cardId -> { ...card, savedAt, note, issue, dirty }
+  closeQueue: [], // card-note issues to close (unsaved while offline)
   read: new Set(),
   filter: 'all',
+  statusFilter: 'all',
   loaded: false,
   syncedAt: null,
   errors: {},
@@ -119,6 +123,100 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
 }
 
+/* ---------- Card art: seeded SVG, one motif per field ---------- */
+const ART = {
+  'time-freedom':    { bg: '#fff3d6', soft: '#ffe2a0', base: '#ffb020', deep: '#e57c00', pop: '#ff4d3d' },
+  'future-of-work':  { bg: '#e3ecff', soft: '#bcd0ff', base: '#2f6bff', deep: '#1a44c2', pop: '#ff4fa3' },
+  'money':           { bg: '#dcf6ea', soft: '#a9ebcf', base: '#00b37e', deep: '#007a57', pop: '#ffb020' },
+  'sports-business': { bg: '#ff4d3d', soft: '#ff8a7d', base: '#ffffff', deep: '#c8261a', pop: '#ffb020' },
+  'skills':          { bg: '#eee6ff', soft: '#d3c2ff', base: '#8b5cf6', deep: '#5b2fc9', pop: '#ff4fa3' },
+  'thoughts':        { bg: '#ffe2f0', soft: '#ffb8da', base: '#ff4fa3', deep: '#c4167a', pop: '#8b5cf6' },
+};
+function hashStr(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function rng(seed) {
+  let a = hashStr(String(seed));
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function artSvg(field, seed) {
+  const c = ART[field] || ART['future-of-work'];
+  const r = rng(seed + '|' + field);
+  const R = (a, b) => a + r() * (b - a);
+  const n = (v) => v.toFixed(1);
+  let s = `<rect width="400" height="240" fill="${c.bg}"/>`;
+
+  if (field === 'time-freedom') {
+    const cx = R(90, 310), cy = R(80, 140), rad = R(48, 70);
+    for (let i = 3; i >= 1; i--) s += `<circle cx="${n(cx)}" cy="${n(cy)}" r="${n(rad + i * 26)}" fill="none" stroke="${c.soft}" stroke-width="12" opacity="${0.35 + i * 0.12}"/>`;
+    s += `<circle cx="${n(cx)}" cy="${n(cy)}" r="${n(rad)}" fill="${c.base}"/>`;
+    const y = R(168, 192), a = R(16, 34);
+    s += `<path d="M0 ${n(y)} Q 100 ${n(y - a)} 200 ${n(y)} T 400 ${n(y)} V240 H0Z" fill="${c.deep}"/>`;
+    s += `<path d="M0 ${n(y + 26)} Q 120 ${n(y + 4)} 240 ${n(y + 26)} T 480 ${n(y + 26)} V240 H0Z" fill="${c.pop}" opacity=".9"/>`;
+  } else if (field === 'future-of-work') {
+    for (let x = 12; x < 400; x += 24) for (let y = 12; y < 240; y += 24) s += `<circle cx="${x}" cy="${y}" r="2.2" fill="${c.deep}" opacity=".28"/>`;
+    const pts = [];
+    let y = R(150, 210);
+    for (let x = 36; x <= 372; x += 84) { pts.push(`${x},${n(y)}`); y = Math.max(36, Math.min(204, y + R(-90, 40))); }
+    s += `<rect x="${n(R(210, 290))}" y="${n(R(30, 80))}" width="84" height="84" rx="20" fill="${c.soft}" transform="rotate(${n(R(-14, 14))} 300 100)"/>`;
+    s += `<polyline points="${pts.join(' ')}" fill="none" stroke="${c.base}" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>`;
+    const last = pts[pts.length - 1].split(',');
+    s += `<circle cx="${last[0]}" cy="${last[1]}" r="20" fill="${c.pop}"/><circle cx="${last[0]}" cy="${last[1]}" r="34" fill="none" stroke="${c.pop}" stroke-width="5" opacity=".4"/>`;
+  } else if (field === 'money') {
+    const count = 5, w = 46, gap = R(14, 22), x0 = R(24, 60);
+    for (let i = 0; i < count; i++) {
+      const h = 46 + i * R(24, 32);
+      s += `<rect x="${n(x0 + i * (w + gap))}" y="${n(240 - h)}" width="${w}" height="${n(h + 20)}" rx="14" fill="${i % 2 ? c.deep : c.base}"/>`;
+    }
+    const cx = R(290, 350), cy = R(48, 76);
+    s += `<circle cx="${n(cx)}" cy="${n(cy)}" r="32" fill="${c.pop}"/><circle cx="${n(cx)}" cy="${n(cy)}" r="20" fill="none" stroke="#fff" stroke-width="4" opacity=".7"/>`;
+    s += `<circle cx="${n(cx - 56)}" cy="${n(cy + 22)}" r="12" fill="${c.soft}"/>`;
+  } else if (field === 'sports-business') {
+    const rot = R(-10, 10), ox = R(-40, 40);
+    s += `<g transform="rotate(${n(rot)} 200 120) translate(${n(ox)} 0)" fill="none" stroke="#fff" stroke-width="6" opacity=".6">`
+      + `<rect x="-20" y="22" width="440" height="196" rx="26"/><line x1="200" y1="22" x2="200" y2="218"/>`
+      + `<circle cx="200" cy="120" r="44"/><path d="M-20 70 H60 A50 50 0 0 1 60 170 H-20"/><path d="M420 70 H340 A50 50 0 0 0 340 170 H420"/></g>`;
+    const bx = R(80, 320), by = R(60, 180);
+    s += `<circle cx="${n(bx)}" cy="${n(by)}" r="30" fill="${c.pop}"/>`
+      + `<path d="M${n(bx - 30)} ${n(by)} H${n(bx + 30)} M${n(bx)} ${n(by - 30)} V${n(by + 30)}" stroke="${c.deep}" stroke-width="3" opacity=".5"/>`;
+    s += `<circle cx="${n(R(40, 360))}" cy="${n(R(30, 210))}" r="10" fill="${c.deep}" opacity=".5"/>`;
+  } else if (field === 'skills') {
+    s += `<path d="M-10 230 Q 200 ${n(R(40, 90))} 410 230" fill="none" stroke="${c.soft}" stroke-width="22"/>`;
+    const nodes = [];
+    for (let i = 0; i < 6; i++) nodes.push([30 + i * 68 + R(-14, 14), R(40, 200)]);
+    let lines = '';
+    for (let i = 0; i < nodes.length - 1; i++) lines += `<line x1="${n(nodes[i][0])}" y1="${n(nodes[i][1])}" x2="${n(nodes[i + 1][0])}" y2="${n(nodes[i + 1][1])}"/>`;
+    lines += `<line x1="${n(nodes[0][0])}" y1="${n(nodes[0][1])}" x2="${n(nodes[3][0])}" y2="${n(nodes[3][1])}"/>`;
+    s += `<g stroke="${c.deep}" stroke-width="4" opacity=".45">${lines}</g>`;
+    nodes.forEach(([x, y], i) => {
+      const fill = i === 2 ? c.pop : i % 2 ? c.base : '#fff';
+      s += `<circle cx="${n(x)}" cy="${n(y)}" r="${n(i === 2 ? 22 : R(10, 17))}" fill="${fill}" stroke="${c.deep}" stroke-width="${fill === '#fff' ? 4 : 0}"/>`;
+    });
+  } else { // thoughts
+    const b = (x, y, w, h, fill, flip) => `<rect x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" rx="${n(h / 2.4)}" fill="${fill}"/>`
+      + `<path d="M${n(x + (flip ? w - 46 : 34))} ${n(y + h - 4)} l${flip ? 22 : -8} 30 l${flip ? -2 : 30} -30z" fill="${fill}"/>`;
+    s += b(R(20, 60), R(26, 50), R(170, 210), R(78, 96), c.base, false);
+    s += b(R(170, 220), R(110, 130), R(150, 180), R(64, 78), c.pop, true);
+    const dx = R(70, 100), dy = R(64, 84);
+    s += [0, 1, 2].map((i) => `<circle cx="${n(dx + i * 26)}" cy="${n(dy)}" r="7" fill="#fff"/>`).join('');
+    s += `<circle cx="${n(R(330, 380))}" cy="${n(R(30, 70))}" r="16" fill="${c.soft}"/>`;
+  }
+  return `<svg viewBox="0 0 400 240" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">${s}</svg>`;
+}
+function artEl(field, seed, cls = 'art') {
+  const d = el('div', cls);
+  if (!d.classList.contains('art')) d.classList.add('art');
+  d.innerHTML = artSvg(field, seed); // generated from numbers and constants only, never data text
+  return d;
+}
+
 /* ---------- GitHub ---------- */
 async function gh(path, { method = 'GET', body, raw = false, token = state.token } = {}) {
   let res;
@@ -147,23 +245,25 @@ async function gh(path, { method = 'GET', body, raw = false, token = state.token
   return res.status === 204 ? null : res.json();
 }
 
+function normalizeCard(c) {
+  return {
+    id: String(c.id),
+    field: str(c.field, 60),
+    headline: str(c.headline, 300),
+    why: str(c.why, 1200),
+    source: str(c.source, 120),
+    url: str(c.url, 2000),
+    drop: str(c.drop, 10),
+    createdAt: str(c.createdAt, 40),
+  };
+}
 function normalizeCards(data) {
   if (!Array.isArray(data)) return [];
   return data
     .filter((c) => c && typeof c === 'object' && (c.id != null) && c.headline)
-    .map((c) => ({
-      id: String(c.id),
-      field: str(c.field, 60),
-      headline: str(c.headline, 300),
-      why: str(c.why, 1200),
-      source: str(c.source, 120),
-      url: str(c.url, 2000),
-      drop: str(c.drop, 10),
-      createdAt: str(c.createdAt, 40),
-    }))
+    .map(normalizeCard)
     .sort((a, b) => (b.drop.localeCompare(a.drop)) || (b.createdAt.localeCompare(a.createdAt)));
 }
-
 function normalizeSources(data) {
   const out = {};
   if (!data || typeof data !== 'object') return out;
@@ -192,63 +292,246 @@ async function fetchSources() {
     throw e;
   }
 }
-async function fetchThoughts() {
-  const issues = await gh(`/repos/${state.repo}/issues?labels=thought&state=all&sort=created&direction=desc&per_page=50`);
-  const list = (Array.isArray(issues) ? issues : []).filter((i) => !i.pull_request);
-  return Promise.all(list.map(async (i) => {
-    let reply = null;
-    if (i.comments > 0) {
-      const cached = state.replyCache[i.number];
-      if (cached && cached.updatedAt === i.updated_at) {
-        reply = cached.reply;
-      } else {
-        try {
-          const cs = await gh(`/repos/${state.repo}/issues/${i.number}/comments?per_page=100`);
-          const c = Array.isArray(cs) && cs[cs.length - 1];
-          if (c) reply = { body: str(c.body, 6000), at: c.created_at };
-          state.replyCache[i.number] = { updatedAt: i.updated_at, reply };
-        } catch { /* keep going without the reply */ }
-      }
-    }
-    return {
-      number: i.number,
-      text: str(i.body, 6000) || str(i.title, 300),
-      at: i.created_at,
-      reply,
-    };
-  }));
+async function fetchIssues(label, maxPages = 1) {
+  let all = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const batch = await gh(`/repos/${state.repo}/issues?labels=${encodeURIComponent(label)}&state=all&sort=created&direction=desc&per_page=100&page=${page}`);
+    if (!Array.isArray(batch)) break;
+    all = all.concat(batch.filter((i) => !i.pull_request));
+    if (batch.length < 100) break;
+  }
+  return all;
+}
+async function latestReply(i) {
+  if (!(i.comments > 0)) return null;
+  const cached = state.replyCache[i.number];
+  if (cached && cached.updatedAt === i.updated_at) return cached.reply;
+  try {
+    const cs = await gh(`/repos/${state.repo}/issues/${i.number}/comments?per_page=100`);
+    const c = Array.isArray(cs) && cs[cs.length - 1];
+    const reply = c ? { body: str(c.body, 6000), at: c.created_at } : null;
+    state.replyCache[i.number] = { updatedAt: i.updated_at, reply };
+    return reply;
+  } catch { return cached ? cached.reply : null; }
 }
 
+/* Embedded JSON in an HTML comment: '-' is escaped so the comment can never end early. */
+const encodeData = (o) => JSON.stringify(o).replace(/-/g, '\\u002d');
+function decodeData(body, tag) {
+  const m = new RegExp(`<!-- ${tag} (\\{[\\s\\S]*?\\}) -->`).exec(body || '');
+  if (!m) return null;
+  try { return JSON.parse(m[1]); } catch { return null; }
+}
+
+async function fetchThoughtsAndLinks() {
+  const [thoughts, links] = await Promise.all([fetchIssues('thought'), fetchIssues('link')]);
+  const items = await Promise.all([
+    ...thoughts.map(async (i) => ({
+      kind: 'thought', number: i.number, text: str(i.body, 6000) || str(i.title, 300),
+      at: i.created_at, closed: i.state === 'closed', reply: await latestReply(i),
+    })),
+    ...links.map(async (i) => {
+      const d = decodeData(i.body, 'tb-link') || {};
+      const found = /(https?:\/\/\S+)/.exec(i.body || '');
+      return {
+        kind: 'link', number: i.number, url: str(d.url, 2000) || (found ? found[1] : ''),
+        text: str(d.note, 2000), at: i.created_at, closed: i.state === 'closed', reply: await latestReply(i),
+      };
+    }),
+  ]);
+  return items.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+}
+
+/* ---------- Card notes (saved cards <-> "card-note" issues) ---------- */
+const blankNote = () => ({ status: 'unread', why: '', learned: '', apply: '', statusAt: {} });
+
+function noteTitle(s) {
+  return `${s.id}: ${s.headline}`.slice(0, 200);
+}
+function noteBody(s) {
+  const n = s.note;
+  const url = safeUrl(s.url);
+  const section = (h, v) => [`## ${h}`, v ? v : '_Not written yet._', ''];
+  const lines = [
+    `**Status:** ${STATUS_LABEL[n.status]}`,
+    `**Field:** ${FIELD_BY_ID[s.field]?.name || s.field || 'Uncategorized'}`,
+    `**Source:** ${s.source || hostOf(s.url) || 'Unknown'}${url ? ` (${url})` : ''}`,
+    `**Saved:** ${String(s.savedAt).slice(0, 10)}`,
+    '',
+    ...section('Why I saved it', n.why),
+    ...section('What I learned', n.learned),
+    ...section("How I'll apply it", n.apply),
+    `<!-- tb-card-note ${encodeData({
+      v: 1,
+      cardId: s.id,
+      card: { headline: s.headline, field: s.field, why: s.why, source: s.source, url: s.url, drop: s.drop, createdAt: s.createdAt },
+      savedAt: s.savedAt,
+      note: n,
+    })} -->`,
+  ];
+  return lines.join('\n');
+}
+function persistSaved() {
+  store.set('saved', state.saved);
+  store.set('closeQueue', state.closeQueue);
+}
+
+const syncing = new Set();
+const resync = new Set();
+const noteTimers = {};
+let syncListener = null; // the open sheet listens for sync results
+
+async function syncNote(id) {
+  clearTimeout(noteTimers[id]);
+  delete noteTimers[id];
+  const s = state.saved[id];
+  if (!s || !state.token) return;
+  s.dirty = true;
+  persistSaved();
+  if (syncing.has(id)) { resync.add(id); return; }
+  syncing.add(id);
+  syncListener?.(id, 'saving');
+  try {
+    const payload = { title: noteTitle(s), body: noteBody(s) };
+    if (s.issue) {
+      await gh(`/repos/${state.repo}/issues/${s.issue}`, { method: 'PATCH', body: { ...payload, state: 'open' } });
+    } else {
+      const issue = await gh(`/repos/${state.repo}/issues`, { method: 'POST', body: { ...payload, labels: ['card-note'] } });
+      s.issue = issue.number;
+    }
+    if (state.saved[id] !== s) {
+      // Unsaved while the request was in flight.
+      queueClose(s);
+    } else {
+      s.dirty = false;
+      persistSaved();
+      syncListener?.(id, 'synced');
+    }
+  } catch {
+    syncListener?.(id, 'offline');
+  } finally {
+    syncing.delete(id);
+    if (resync.delete(id)) syncNote(id);
+  }
+}
+function syncNoteSoon(id) {
+  clearTimeout(noteTimers[id]);
+  syncListener?.(id, 'pending');
+  noteTimers[id] = setTimeout(() => syncNote(id), 1200);
+}
+function queueClose(s) {
+  if (!s.issue) return;
+  state.closeQueue = state.closeQueue.filter((q) => q.issue !== s.issue);
+  state.closeQueue.push({ issue: s.issue, snapshot: s });
+  persistSaved();
+  flushCloseQueue();
+}
+let flushingClose = false;
+async function flushCloseQueue() {
+  if (flushingClose || !state.token) return;
+  flushingClose = true;
+  for (const q of [...state.closeQueue]) {
+    // Saved again before the close went through: leave it open.
+    if (Object.values(state.saved).some((s) => s.issue === q.issue)) {
+      state.closeQueue = state.closeQueue.filter((x) => x !== q);
+      continue;
+    }
+    try {
+      const snap = { ...q.snapshot, note: { ...blankNote(), ...q.snapshot.note } };
+      const body = noteBody(snap).replace(/^\*\*Status:\*\* .*/, '**Status:** Dropped (unsaved)');
+      await gh(`/repos/${state.repo}/issues/${q.issue}`, {
+        method: 'PATCH',
+        body: { body, state: 'closed', state_reason: 'not_planned' },
+      });
+      state.closeQueue = state.closeQueue.filter((x) => x !== q);
+    } catch { break; }
+  }
+  persistSaved();
+  flushingClose = false;
+}
+
+async function fetchNotes() {
+  return fetchIssues('card-note', 3);
+}
+
+/* Merge remote card-notes with this phone's saved cards. */
+function reconcileNotes(issues) {
+  const latest = {};
+  for (const i of issues) {
+    const d = decodeData(i.body, 'tb-card-note');
+    if (!d || !d.cardId) continue;
+    const id = String(d.cardId);
+    if (!latest[id] || i.updated_at > latest[id].issue.updated_at) latest[id] = { issue: i, data: d };
+  }
+  const queuedClose = new Set(state.closeQueue.map((q) => q.issue));
+  for (const [id, { issue, data }] of Object.entries(latest)) {
+    const local = state.saved[id];
+    if (issue.state === 'open') {
+      if (queuedClose.has(issue.number)) continue;
+      if (!local) {
+        // Saved on another device.
+        if (!data.card || !data.card.headline) continue;
+        state.saved[id] = {
+          ...normalizeCard({ id, ...data.card }),
+          savedAt: data.savedAt || issue.created_at,
+          note: { ...blankNote(), ...data.note },
+          issue: issue.number,
+          dirty: false,
+        };
+      } else if (!local.issue) {
+        local.issue = issue.number;
+        local.dirty = true;
+      } else if (!local.dirty && local.issue === issue.number) {
+        local.note = { ...blankNote(), ...data.note };
+      }
+    } else if (local) {
+      if (local.issue === issue.number && !local.dirty &&
+          new Date(issue.closed_at || 0) > new Date(local.savedAt || 0)) {
+        delete state.saved[id]; // unsaved on another device
+      } else if (!local.issue) {
+        local.issue = issue.number; // reopen the old note instead of making a new one
+        local.dirty = true;
+      }
+    }
+  }
+  persistSaved();
+  for (const s of Object.values(state.saved)) if (s.dirty || !s.issue) syncNote(s.id);
+  flushCloseQueue();
+}
+
+/* ---------- Load ---------- */
 async function loadAll({ quiet = false } = {}) {
   if (!state.token || state.refreshing) return;
   state.refreshing = true;
-  const [cards, sources, thoughts] = await Promise.allSettled([fetchCards(), fetchSources(), fetchThoughts()]);
+  const [cards, sources, thoughts, notes] = await Promise.allSettled([
+    fetchCards(), fetchSources(), fetchThoughtsAndLinks(), fetchNotes(),
+  ]);
   state.refreshing = false;
   if (!state.token) return; // key was forgotten mid-flight
 
   state.errors = {};
-  const failed = [cards, sources, thoughts].filter((r) => r.status === 'rejected').map((r) => r.reason);
+  const failed = [cards, sources, thoughts, notes].filter((r) => r.status === 'rejected').map((r) => r.reason);
   if (cards.status === 'fulfilled') state.cards = cards.value; else state.errors.cards = cards.reason;
   if (sources.status === 'fulfilled') state.sources = sources.value; else state.errors.sources = sources.reason;
-  if (thoughts.status === 'fulfilled') state.thoughts = mergePending(thoughts.value); else state.errors.thoughts = thoughts.reason;
+  if (thoughts.status === 'fulfilled') state.thoughts = [...state.thoughts.filter((t) => t.pending), ...thoughts.value];
+  else state.errors.thoughts = thoughts.reason;
+  if (notes.status === 'fulfilled') reconcileNotes(notes.value);
 
-  if (failed.length < 3) {
+  if (failed.length < 4) {
     state.loaded = true;
     state.syncedAt = new Date().toISOString();
-    store.set('cache', {
-      cards: state.cards, sources: state.sources, thoughts: state.thoughts.filter((t) => !t.pending),
-      replyCache: state.replyCache, syncedAt: state.syncedAt,
-    });
+    saveCache();
   }
   renderAll();
   if (failed.some((e) => e && e.status === 0)) toast("You're offline. Showing your last sync.");
   else if (!quiet && failed.length === 0) toast('Up to date');
   return failed;
 }
-
-function mergePending(fresh) {
-  const pending = state.thoughts.filter((t) => t.pending);
-  return [...pending, ...fresh];
+function saveCache() {
+  store.set('cache', {
+    cards: state.cards, sources: state.sources, thoughts: state.thoughts.filter((t) => !t.pending),
+    replyCache: state.replyCache, syncedAt: state.syncedAt,
+  });
 }
 
 function errorCopy(e) {
@@ -262,13 +545,21 @@ function errorCopy(e) {
 
 /* ---------- Saved / read ---------- */
 function isSaved(id) { return Object.prototype.hasOwnProperty.call(state.saved, id); }
+function hasNoteText(s) { return !!(s && (s.note.why || s.note.learned || s.note.apply)); }
+
 function toggleSave(card) {
   if (isSaved(card.id)) {
+    const s = state.saved[card.id];
     delete state.saved[card.id];
+    clearTimeout(noteTimers[card.id]);
+    persistSaved();
+    queueClose(s);
   } else {
-    state.saved[card.id] = { ...card, savedAt: new Date().toISOString() };
+    const base = normalizeCard(card);
+    state.saved[card.id] = { ...base, savedAt: new Date().toISOString(), note: blankNote(), issue: null, dirty: true };
+    persistSaved();
+    syncNote(card.id);
   }
-  store.set('saved', state.saved);
   syncCardButtons(card.id);
   return isSaved(card.id);
 }
@@ -277,6 +568,18 @@ function toggleRead(id) {
   store.set('read', Array.from(state.read).slice(-3000));
   syncCardButtons(id);
   renderFeedMeta();
+}
+function setStatus(id, status) {
+  const s = state.saved[id];
+  if (!s || !STATUSES.includes(status)) return;
+  const now = new Date().toISOString();
+  const statusAt = { ...s.note.statusAt };
+  // Jumping ahead (say, straight to Applied) also stamps the steps skipped on the way.
+  STATUSES.slice(1, STATUSES.indexOf(status) + 1).forEach((st) => { if (!statusAt[st] || st === status) statusAt[st] = now; });
+  s.note.status = status;
+  s.note.statusAt = statusAt;
+  persistSaved();
+  syncNote(id);
 }
 function syncCardButtons(id) {
   $$(`.card[data-id="${CSS.escape(id)}"]`).forEach((c) => {
@@ -288,28 +591,50 @@ function syncCardButtons(id) {
     const rb = $('.read-btn', c);
     rb.setAttribute('aria-pressed', String(read));
     rb.setAttribute('aria-label', read ? 'Mark unread' : 'Mark read');
-    c.classList.toggle('is-read', read);
+    c.classList.toggle('is-read', read && !c.classList.contains('compact'));
   });
 }
 
 /* ---------- Card element ---------- */
 const tplCard = $('#tpl-card');
-function cardEl(card, i = 0, animate = false) {
+function cardEl(card, { i = 0, animate = false, layout = 'standard', savedView = false } = {}) {
   const node = tplCard.content.firstElementChild.cloneNode(true);
   node.dataset.id = card.id;
-  if (FIELD_BY_ID[card.field]) node.dataset.field = card.field;
+  node.dataset.field = FIELD_BY_ID[card.field] ? card.field : 'none';
+  node.classList.add(layout);
+  const art = $('.card-art', node);
+  art.classList.add('art');
+  art.innerHTML = artSvg(card.field, card.id); // numbers and constants only
+  if (layout === 'split') $('.card-body', node).prepend(art);
+
   $('.tag-name', node).textContent = FIELD_BY_ID[card.field]?.name || card.field || 'Uncategorized';
   $('.card-headline', node).textContent = card.headline;
-  if (card.why) {
-    $('.card-why', node).textContent = card.why;
-  } else {
-    $('.card-why-label', node).remove();
-    $('.card-why', node).remove();
-  }
+  if (card.why) $('.card-why', node).textContent = card.why;
+  else { $('.card-why-label', node).remove(); $('.card-why', node).remove(); }
+
   const a = $('.card-source', node);
   const url = safeUrl(card.url);
   a.textContent = card.source || hostOf(card.url) || 'Source';
   if (url) a.href = url; else a.removeAttribute('href');
+
+  if (savedView) {
+    const s = state.saved[card.id];
+    node.classList.add('compact', 'opens');
+    $('.card-why-label', node)?.remove();
+    const chip = $('.status-chip', node);
+    chip.hidden = false;
+    chip.dataset.status = s.note.status;
+    chip.textContent = STATUS_LABEL[s.note.status];
+    chip.setAttribute('aria-label', `Status: ${STATUS_LABEL[s.note.status]}. Tap to move it forward.`);
+    $('.read-btn', node).hidden = true;
+    const preview = s.note.learned ? ['Learned', s.note.learned] : s.note.why ? ['Why I saved it', s.note.why] : null;
+    if (preview) {
+      const p = el('p', 'card-note-preview');
+      p.append(el('b', null, preview[0] + ': '), document.createTextNode(preview[1]));
+      $('.card-foot', node).before(p);
+    }
+  }
+
   if (animate && !reduceMotion.matches) {
     node.classList.add('enter');
     node.style.setProperty('--i', String(i));
@@ -322,7 +647,7 @@ function cardEl(card, i = 0, animate = false) {
   $('.save-btn', node).setAttribute('aria-label', saved ? 'Remove from saved' : 'Save');
   $('.read-btn', node).setAttribute('aria-pressed', String(read));
   $('.read-btn', node).setAttribute('aria-label', read ? 'Mark unread' : 'Mark read');
-  node.classList.toggle('is-read', read);
+  node.classList.toggle('is-read', read && !savedView);
   return node;
 }
 
@@ -336,19 +661,16 @@ function latestDrop() {
   return state.cards.reduce((m, c) => (c.drop > m ? c.drop : m), '');
 }
 const matchesFilter = (c) => state.filter === 'all' || c.field === state.filter;
+const feedLayout = (i) => (i === 0 ? 'featured' : i % 3 === 2 ? 'split' : 'standard');
 
 function renderChips() {
   const nav = $('#chips');
   nav.replaceChildren();
-  const all = [{ id: 'all', name: 'All' }, ...FIELDS];
-  for (const f of all) {
+  for (const f of [{ id: 'all', name: 'All' }, ...FIELDS]) {
     const b = el('button', 'chip');
     b.type = 'button';
     b.dataset.filter = f.id;
-    if (f.id !== 'all') {
-      b.style.setProperty('--f', `var(--f-${f.id})`);
-      b.append(el('i'));
-    }
+    if (f.id !== 'all') { b.dataset.field = f.id; b.append(el('i')); }
     b.append(document.createTextNode(f.name));
     b.setAttribute('aria-pressed', String(state.filter === f.id));
     nav.append(b);
@@ -389,9 +711,8 @@ function renderFeed() {
     renderFeedMeta();
     return;
   }
-
   if (state.cards.length === 0) {
-    if (!err) status.append(el('b', null, 'Your first drop is on its way'), document.createTextNode('Cards land here every other day. Drop a thought while you wait.'));
+    if (!err) status.append(el('b', null, 'Your first drop is on its way'), document.createTextNode('Cards land here every other day. Drop a thought or add a link while you wait.'));
     caught.hidden = true;
     renderFeedMeta();
     return;
@@ -402,13 +723,12 @@ function renderFeed() {
     const f = FIELD_BY_ID[state.filter];
     status.append(el('b', null, `Nothing on ${f ? f.name.toLowerCase() : 'this'} in ${dropLabel(latest).toLowerCase()}`), document.createTextNode('Try another field, or check the earlier drops below.'));
   }
-  latestCards.forEach((c, i) => list.append(cardEl(c, i, animate)));
+  latestCards.forEach((c, i) => list.append(cardEl(c, { i, animate, layout: feedLayout(i) })));
 
   caught.hidden = false;
   caught.classList.remove('seen');
   observeCaughtUp(animate);
 
-  // Earlier drops, collapsed. Cards render only when a group opens.
   const groups = new Map();
   for (const c of state.cards) {
     if (c.drop === latest || !matchesFilter(c)) continue;
@@ -425,7 +745,7 @@ function renderFeed() {
       const wrap = el('div', 'cards');
       d.append(wrap);
       d.addEventListener('toggle', () => {
-        if (d.open && !wrap.childElementCount) cards.forEach((c, i) => wrap.append(cardEl(c, i, true)));
+        if (d.open && !wrap.childElementCount) cards.forEach((c, i) => wrap.append(cardEl(c, { i, animate: true, layout: 'split' })));
       });
       older.append(d);
     }
@@ -438,13 +758,9 @@ function renderFeedMeta() {
   const inDrop = state.cards.filter((c) => c.drop === latest);
   const unread = inDrop.filter((c) => !state.read.has(c.id)).length;
   const sub = $('#hero-sub');
-  if (!inDrop.length) {
-    sub.textContent = state.loaded ? 'Your first drop is on its way.' : '';
-  } else if (unread === 0) {
-    sub.textContent = `You've read all of ${dropLabel(latest).toLowerCase()}.`;
-  } else {
-    sub.textContent = `${dropLabel(latest)}: ${inDrop.length} cards, ${unread} unread.`;
-  }
+  if (!inDrop.length) sub.textContent = state.loaded ? 'Your first drop is on its way.' : '';
+  else if (unread === 0) sub.textContent = `You've read all of ${dropLabel(latest).toLowerCase()}.`;
+  else sub.textContent = `${dropLabel(latest)}: ${inDrop.length} cards, ${unread} unread.`;
 
   const next = parseDay(latest);
   let nextText = '';
@@ -454,44 +770,77 @@ function renderFeedMeta() {
       ? 'The next drop is due any time now.'
       : `The next one lands around ${fmtDay(next, { weekday: 'long', month: 'short', day: 'numeric' })}.`;
   }
-  const lead = unread === 0
-    ? `You read all ${inDrop.length}.`
-    : `That's all ${inDrop.length} from this drop.`;
+  const lead = unread === 0 ? `You read all ${inDrop.length}.` : `That's all ${inDrop.length} from this drop.`;
   $('#caught-text').textContent = `${lead} ${nextText}`.trim();
 }
 
 let caughtObserver;
 function observeCaughtUp(animate) {
   const node = $('#caught-up');
-  if (!animate || reduceMotion.matches || !('IntersectionObserver' in window)) {
-    node.classList.add('seen');
-    return;
-  }
+  if (!animate || reduceMotion.matches || !('IntersectionObserver' in window)) { node.classList.add('seen'); return; }
   caughtObserver?.disconnect();
   caughtObserver = new IntersectionObserver((entries) => {
-    if (entries.some((e) => e.isIntersecting)) {
-      node.classList.add('seen');
-      caughtObserver.disconnect();
-    }
+    if (entries.some((e) => e.isIntersecting)) { node.classList.add('seen'); caughtObserver.disconnect(); }
   }, { threshold: 0.6 });
   caughtObserver.observe(node);
 }
 
 /* ---------- Saved ---------- */
-function renderSaved() {
+function monthProgress() {
+  const now = new Date();
+  const inMonth = (iso) => {
+    const d = iso ? new Date(iso) : null;
+    return d && d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+  };
+  let learned = 0, applied = 0;
+  for (const s of Object.values(state.saved)) {
+    const idx = STATUSES.indexOf(s.note.status);
+    if (idx >= 2 && inMonth(s.note.statusAt?.learned)) learned++;
+    if (idx >= 3 && inMonth(s.note.statusAt?.applied)) applied++;
+  }
+  return { learned, applied };
+}
+function renderSaved({ animate = true } = {}) {
+  const items = Object.values(state.saved).sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''));
+  const prog = $('#saved-progress');
+  prog.replaceChildren();
+  if (!items.length) {
+    prog.textContent = 'Cards you keep live here.';
+  } else {
+    const { learned, applied } = monthProgress();
+    prog.append(el('b', null, `${learned} learned, ${applied} applied`), document.createTextNode(' this month.'));
+  }
+
+  const chips = $('#status-chips');
+  chips.replaceChildren();
+  chips.hidden = !items.length;
+  for (const st of ['all', ...STATUSES]) {
+    const b = el('button', 'chip');
+    b.type = 'button';
+    b.dataset.statusFilter = st;
+    if (st !== 'all') { b.dataset.status = st; b.append(el('i')); }
+    b.append(document.createTextNode(st === 'all' ? 'All ' : STATUS_LABEL[st] + ' '));
+    b.append(el('b', null, String(st === 'all' ? items.length : items.filter((s) => s.note.status === st).length)));
+    b.setAttribute('aria-pressed', String(state.statusFilter === st));
+    chips.append(b);
+  }
+
   const list = $('#saved-list');
   list.replaceChildren();
-  const items = Object.values(state.saved).sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''));
-  $('#saved-count').textContent = items.length
-    ? (items.length === 1 ? '1 card worth keeping.' : `${items.length} cards worth keeping.`)
-    : 'Cards you keep live here.';
   if (!items.length) {
     const e = el('div', 'empty');
-    e.append(el('b', null, 'Nothing saved yet'), document.createTextNode('Tap the bookmark on any card in your feed to keep it here.'));
+    e.append(el('b', null, 'Nothing saved yet'), document.createTextNode('Tap the bookmark on any card in your feed. Then open it here to note what you learned.'));
     list.append(e);
     return;
   }
-  items.forEach((c, i) => list.append(cardEl(c, i, i < 8)));
+  const shown = items.filter((s) => state.statusFilter === 'all' || s.note.status === state.statusFilter);
+  if (!shown.length) {
+    const e = el('div', 'empty');
+    e.append(el('b', null, `Nothing marked ${STATUS_LABEL[state.statusFilter].toLowerCase()}`), document.createTextNode('Tap the status on a card to move it forward.'));
+    list.append(e);
+    return;
+  }
+  shown.forEach((s, i) => list.append(cardEl(s, { i, animate: animate && i < 8, layout: 'split', savedView: true })));
 }
 
 /* ---------- Thoughts ---------- */
@@ -507,17 +856,31 @@ function renderThoughts() {
   }
   if (!state.thoughts.length) {
     const e = el('div', 'empty');
-    e.append(el('b', null, state.loaded ? 'No thoughts yet' : 'Loading your thoughts'),
-      document.createTextNode(state.loaded ? 'Type one above. The Brain reads it on the next sweep and replies here.' : 'One second.'));
+    e.append(el('b', null, state.loaded ? 'Nothing here yet' : 'Loading your thoughts'),
+      document.createTextNode(state.loaded ? 'Type a thought above, or tap + to add a link. The Brain answers on its next sweep.' : 'One second.'));
     list.append(e);
     return;
   }
   for (const t of state.thoughts) {
     const item = el('article', 'thought');
-    item.append(el('p', 'thought-text', t.text));
+    if (t.kind === 'link') {
+      const url = safeUrl(t.url);
+      const a = el(url ? 'a' : 'div', 'thought-link');
+      if (url) { a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+      a.append(artEl('thoughts', t.url || String(t.number)));
+      const span = el('span');
+      span.append(el('b', null, hostOf(t.url) || 'Link'), el('small', null, t.url));
+      a.append(span);
+      item.append(a);
+      if (t.text) item.append(el('p', 'thought-text', t.text));
+    } else {
+      item.append(el('p', 'thought-text', t.text));
+    }
     const meta = el('div', 'thought-meta');
     let pill;
     if (t.pending) pill = el('span', 'pill pill-sending', 'Sending');
+    else if (t.kind === 'link' && t.closed) pill = el('span', 'pill pill-done', 'Added to your feed');
+    else if (t.kind === 'link' && !t.reply) pill = el('span', 'pill pill-wait', 'Waiting for the Brain');
     else if (t.reply) pill = el('span', 'pill pill-done', 'Brain replied');
     else pill = el('span', 'pill pill-wait', 'Waiting');
     pill.prepend(el('i'));
@@ -533,8 +896,7 @@ function renderThoughts() {
 }
 function updateThoughtsBadge() {
   const seen = store.get('thoughtsSeenAt', '');
-  const fresh = state.thoughts.some((t) => t.reply && t.reply.at > seen);
-  $('#thoughts-badge').hidden = !fresh;
+  $('#thoughts-badge').hidden = !state.thoughts.some((t) => t.reply && t.reply.at > seen);
 }
 
 /* ---------- Sources ---------- */
@@ -550,15 +912,13 @@ function renderSources() {
   }
   for (const f of FIELDS) {
     const g = el('section', 'source-group');
-    g.style.setProperty('--f', `var(--f-${f.id})`);
-    const h = el('h2');
-    h.append(el('i'), document.createTextNode(f.name));
-    g.append(h);
+    g.dataset.field = f.id;
+    const head = el('div', 'source-head');
+    head.append(artEl(f.id, 'source-' + f.id), el('h2', null, f.name));
+    g.append(head);
     const items = state.sources[f.id] || [];
-    if (f.id === 'thoughts' && !items.length) {
-      g.append(el('p', 'source-note', 'Comes from what you post in Thoughts.'));
-    } else if (!items.length) {
-      g.append(el('p', 'source-note', 'No sources yet.'));
+    if (!items.length) {
+      g.append(el('p', 'source-note', f.id === 'thoughts' ? 'Comes from what you post in Thoughts, plus links you add.' : 'No sources yet.'));
     } else {
       const ul = el('ul');
       for (const s of items) {
@@ -600,8 +960,7 @@ function renderView(v) {
     renderThoughts();
     store.set('thoughtsSeenAt', new Date().toISOString());
     updateThoughtsBadge();
-  }
-  else if (v === 'sources') renderSources();
+  } else if (v === 'sources') renderSources();
   else if (v === 'settings') renderSettings();
 }
 function route() {
@@ -622,16 +981,18 @@ function route() {
     if (a.dataset.tab === v) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
+  $('#fab').hidden = !(v === 'feed' || v === 'thoughts');
   renderView(v);
   if (changed) window.scrollTo(0, 0);
 }
 function renderAll() {
   if (!state.token) return;
+  if (currentView === 'saved' && $('#note-sheet').open) return; // don't yank the list under an open sheet
   renderView(currentRoute());
   updateThoughtsBadge();
 }
 
-/* ---------- Composer ---------- */
+/* ---------- Composer (thoughts) ---------- */
 function mountComposers() {
   const tpl = $('#tpl-composer');
   $$('[data-composer]').forEach((slot) => {
@@ -663,45 +1024,231 @@ function mountComposers() {
 }
 
 async function postThought(text) {
-  const temp = { number: 'pending-' + Date.now(), text, at: new Date().toISOString(), reply: null, pending: true };
+  const temp = { kind: 'thought', number: 'pending-' + Date.now(), text, at: new Date().toISOString(), reply: null, pending: true };
   state.thoughts.unshift(temp);
   if (currentView === 'thoughts') renderThoughts();
   const firstLine = text.split('\n')[0];
   const title = firstLine.length > 60 ? firstLine.slice(0, 59).trimEnd() + '…' : firstLine;
   try {
-    const issue = await gh(`/repos/${state.repo}/issues`, {
-      method: 'POST',
-      body: { title, body: text, labels: ['thought'] },
-    });
+    const issue = await gh(`/repos/${state.repo}/issues`, { method: 'POST', body: { title, body: text, labels: ['thought'] } });
     Object.assign(temp, { number: issue.number, at: issue.created_at, pending: false });
-    store.set('cache', { ...store.get('cache', {}), thoughts: state.thoughts.filter((t) => !t.pending) });
+    saveCache();
     toast('Thought sent. The Brain replies on its next sweep.');
     if (currentView === 'thoughts') renderThoughts();
     return true;
   } catch (e) {
     state.thoughts = state.thoughts.filter((t) => t !== temp);
     if (currentView === 'thoughts') renderThoughts();
-    toast(e.status === 403 || e.status === 404
-      ? "Couldn't send. The key needs Issues read and write."
-      : e.status === 401 ? "Couldn't send. Your key stopped working." : "Couldn't send. Check your connection.");
+    toast(sendError(e));
     return false;
   }
 }
+function sendError(e) {
+  if (e.status === 403 || e.status === 404) return "Couldn't send. The key needs Issues read and write.";
+  if (e.status === 401) return "Couldn't send. Your key stopped working.";
+  return "Couldn't send. Check your connection.";
+}
 
-/* ---------- Card interactions: save, read, tilt ---------- */
+/* ---------- Sheets ---------- */
+function openSheet(dialog) {
+  dialog.classList.remove('closing');
+  dialog.style.transform = '';
+  if (!dialog.open) dialog.showModal();
+  dialog.scrollTop = 0;
+}
+function closeSheet(dialog) {
+  if (!dialog.open || dialog.classList.contains('closing')) return;
+  dialog.dispatchEvent(new Event('sheetclose'));
+  if (reduceMotion.matches) { dialog.close(); return; }
+  dialog.classList.add('closing');
+  dialog.addEventListener('animationend', () => {
+    dialog.classList.remove('closing');
+    dialog.style.transform = '';
+    dialog.close();
+  }, { once: true });
+}
+$$('.sheet').forEach((dialog) => {
+  dialog.addEventListener('cancel', (e) => { e.preventDefault(); closeSheet(dialog); });
+  dialog.addEventListener('click', (e) => {
+    if (e.target.closest('[data-close]')) { closeSheet(dialog); return; }
+    if (e.target === dialog && e.clientY < dialog.getBoundingClientRect().top) closeSheet(dialog);
+  });
+  // Drag the grip down to dismiss.
+  const grip = $('[data-grip]', dialog);
+  let start = null;
+  grip.addEventListener('pointerdown', (e) => { start = e.clientY; grip.setPointerCapture(e.pointerId); });
+  grip.addEventListener('pointermove', (e) => {
+    if (start == null) return;
+    dialog.style.transform = `translate3d(0, ${Math.max(0, e.clientY - start)}px, 0)`;
+  });
+  const end = (e) => {
+    if (start == null) return;
+    const dy = e.clientY - start;
+    start = null;
+    if (dy > 90) closeSheet(dialog);
+    else dialog.style.transform = '';
+  };
+  grip.addEventListener('pointerup', end);
+  grip.addEventListener('pointercancel', end);
+});
+
+/* Note sheet for a saved card */
+let openNoteId = null;
+const SYNC_COPY = {
+  pending: 'Saving…',
+  saving: 'Saving…',
+  synced: 'Synced to your Brain',
+  offline: "Saved on this phone. It'll sync when you're back online.",
+};
+function renderStatusTrack(id) {
+  const s = state.saved[id];
+  const track = $('#note-status');
+  track.replaceChildren();
+  const cur = STATUSES.indexOf(s.note.status);
+  STATUSES.forEach((st, idx) => {
+    const b = el('button', idx < cur ? 'done' : '', STATUS_LABEL[st]);
+    b.type = 'button';
+    b.dataset.status = st;
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(idx === cur));
+    track.append(b);
+  });
+}
+function openNote(id) {
+  const s = state.saved[id];
+  if (!s) return;
+  openNoteId = id;
+  const sheet = $('#note-sheet');
+  sheet.dataset.field = FIELD_BY_ID[s.field] ? s.field : 'none';
+  const art = $('#note-art');
+  art.classList.add('art');
+  art.innerHTML = artSvg(s.field, s.id); // numbers and constants only
+  $('#note-tag .tag-name').textContent = FIELD_BY_ID[s.field]?.name || s.field || 'Uncategorized';
+  $('#note-headline').textContent = s.headline;
+  const a = $('#note-source');
+  const url = safeUrl(s.url);
+  a.textContent = s.source || hostOf(s.url) || 'Source';
+  if (url) a.href = url; else a.removeAttribute('href');
+  renderStatusTrack(id);
+  $('#note-why').value = s.note.why || '';
+  $('#note-learned').value = s.note.learned || '';
+  $('#note-apply').value = s.note.apply || '';
+  $('#note-sync').textContent = s.dirty ? SYNC_COPY.offline : s.issue ? SYNC_COPY.synced : '';
+  openSheet(sheet);
+  // showModal focuses the first link; start with nothing focused so no ring shows.
+  if (document.activeElement && sheet.contains(document.activeElement)) document.activeElement.blur();
+}
+syncListener = (id, phase) => {
+  if (id === openNoteId && $('#note-sheet').open) $('#note-sync').textContent = SYNC_COPY[phase] || '';
+};
+$('#note-status').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-status]');
+  if (!b || !openNoteId) return;
+  setStatus(openNoteId, b.dataset.status);
+  renderStatusTrack(openNoteId);
+});
+[['#note-why', 'why'], ['#note-learned', 'learned'], ['#note-apply', 'apply']].forEach(([sel, key]) => {
+  const input = $(sel);
+  input.addEventListener('input', () => {
+    const s = state.saved[openNoteId];
+    if (!s) return;
+    s.note[key] = input.value.slice(0, 600);
+    s.dirty = true;
+    persistSaved();
+    syncNoteSoon(openNoteId);
+  });
+});
+$('#note-sheet').addEventListener('sheetclose', () => {
+  const id = openNoteId;
+  if (id && noteTimers[id]) syncNote(id);
+  openNoteId = null;
+  if (currentView === 'saved') renderSaved({ animate: false });
+});
+
+/* Add-a-link sheet */
+function normalizeLink(raw) {
+  let v = raw.trim();
+  if (!v) return null;
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(v)) v = 'https://' + v;
+  const url = safeUrl(v);
+  if (!url) return null;
+  return new URL(url).hostname.includes('.') ? url : null;
+}
+$('#fab').addEventListener('click', () => {
+  $('#link-url').value = '';
+  $('#link-note').value = '';
+  $('#link-error').hidden = true;
+  $('#link-paste').hidden = !(navigator.clipboard && navigator.clipboard.readText);
+  openSheet($('#link-sheet'));
+});
+$('#link-paste').addEventListener('click', async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    const found = /(https?:\/\/\S+)/.exec(text || '');
+    $('#link-url').value = (found ? found[1] : text || '').trim();
+  } catch { toast('Paste with a long press instead.'); }
+});
+$('#link-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = $('#link-error');
+  err.hidden = true;
+  const url = normalizeLink($('#link-url').value);
+  const note = $('#link-note').value.trim().slice(0, 800);
+  if (!url) { err.textContent = 'That doesn\'t look like a link. Paste the full address, like https://example.com/story.'; err.hidden = false; return; }
+
+  const btn = $('#link-submit');
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  const host = hostOf(url);
+  let path = '';
+  try { path = new URL(url).pathname.replace(/\/$/, ''); } catch { /* ignore */ }
+  const title = `Link: ${host}${path}`.slice(0, 100);
+  const body = [
+    url,
+    '',
+    `**Why it caught my eye:** ${note || '_No note._'}`,
+    '',
+    `<!-- tb-link ${encodeData({ v: 1, url, note })} -->`,
+  ].join('\n');
+  try {
+    const issue = await gh(`/repos/${state.repo}/issues`, { method: 'POST', body: { title, body, labels: ['link'] } });
+    state.thoughts.unshift({ kind: 'link', number: issue.number, url, text: note, at: issue.created_at, closed: false, reply: null });
+    saveCache();
+    closeSheet($('#link-sheet'));
+    toast("Link sent. It'll show up in your next drop.");
+    if (currentView === 'thoughts') renderThoughts();
+  } catch (ex) {
+    err.textContent = sendError(ex);
+    err.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Send to the Brain';
+  }
+});
+
+/* ---------- Card interactions: filters, save, read, status, open, tilt ---------- */
 document.addEventListener('click', (e) => {
   const chip = e.target.closest('.chip');
-  if (chip) {
+  if (chip && chip.dataset.filter) {
     state.filter = chip.dataset.filter;
-    $$('.chip').forEach((c) => c.setAttribute('aria-pressed', String(c === chip)));
+    $$('#chips .chip').forEach((c) => c.setAttribute('aria-pressed', String(c === chip)));
     chip.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: reduceMotion.matches ? 'auto' : 'smooth' });
     renderFeed();
     return;
   }
+  if (chip && chip.dataset.statusFilter) {
+    state.statusFilter = chip.dataset.statusFilter;
+    renderSaved();
+    return;
+  }
   const card = e.target.closest('.card');
   if (!card || !card._card) return;
+  const id = card._card.id;
+
   if (e.target.closest('.save-btn')) {
     const btn = e.target.closest('.save-btn');
+    const s = state.saved[id];
+    if (s && hasNoteText(s) && !window.confirm('Remove from saved? Your notes stay in your data repo.')) return;
     const nowSaved = toggleSave(card._card);
     if (nowSaved) {
       btn.classList.remove('pop');
@@ -709,13 +1256,31 @@ document.addEventListener('click', (e) => {
       btn.classList.add('pop');
       if (navigator.vibrate) navigator.vibrate(8);
     }
-    toast(nowSaved ? 'Saved' : 'Removed from saved');
-    if (currentView === 'saved') renderSaved();
+    toast(nowSaved ? 'Saved. Open it in Saved to add notes.' : 'Removed from saved');
+    if (currentView === 'saved') renderSaved({ animate: false });
   } else if (e.target.closest('.read-btn')) {
-    toggleRead(card._card.id);
+    toggleRead(id);
+  } else if (e.target.closest('.status-chip')) {
+    const s = state.saved[id];
+    if (!s) return;
+    const idx = STATUSES.indexOf(s.note.status);
+    if (idx >= STATUSES.length - 1) { openNote(id); return; }
+    const next = STATUSES[idx + 1];
+    setStatus(id, next);
+    const chipEl = e.target.closest('.status-chip');
+    chipEl.dataset.status = next;
+    chipEl.textContent = STATUS_LABEL[next];
+    chipEl.classList.remove('bump');
+    void chipEl.offsetWidth;
+    chipEl.classList.add('bump');
+    if (navigator.vibrate) navigator.vibrate(6);
+    const { learned, applied } = monthProgress();
+    const prog = $('#saved-progress');
+    prog.replaceChildren(el('b', null, `${learned} learned, ${applied} applied`), document.createTextNode(' this month.'));
   } else if (e.target.closest('.card-source')) {
-    // Opening the source counts as reading it.
-    if (!state.read.has(card._card.id)) toggleRead(card._card.id);
+    if (!state.read.has(id)) toggleRead(id); // opening the source counts as reading it
+  } else if (card.classList.contains('opens')) {
+    openNote(id);
   }
 });
 
@@ -726,7 +1291,7 @@ function applyTilt() {
   const { card, rect, x, y } = tilt;
   const px = Math.max(-0.5, Math.min(0.5, (x - rect.left) / rect.width - 0.5));
   const py = Math.max(-0.5, Math.min(0.5, (y - rect.top) / rect.height - 0.5));
-  card.style.transform = `perspective(900px) rotateX(${(-py * 7).toFixed(2)}deg) rotateY(${(px * 7).toFixed(2)}deg) scale(0.985)`;
+  card.style.transform = `perspective(900px) rotateX(${(-py * 6).toFixed(2)}deg) rotateY(${(px * 6).toFixed(2)}deg) scale(0.985)`;
 }
 function releaseTilt() {
   if (!tilt) return;
@@ -754,8 +1319,7 @@ document.addEventListener('pointermove', (e) => {
   tilt.y = e.clientY;
   if (!tilt.raf) tilt.raf = requestAnimationFrame(applyTilt);
 }, { passive: true });
-['pointerup', 'pointercancel'].forEach((t) =>
-  document.addEventListener(t, releaseTilt, { passive: true }));
+['pointerup', 'pointercancel'].forEach((t) => document.addEventListener(t, releaseTilt, { passive: true }));
 window.addEventListener('scroll', releaseTilt, { passive: true });
 
 /* ---------- Pull to refresh ---------- */
@@ -776,7 +1340,7 @@ window.addEventListener('scroll', releaseTilt, { passive: true });
     setTimeout(() => ptr.classList.remove('release'), 450);
   };
   document.addEventListener('touchstart', (e) => {
-    if (!state.token || state.refreshing || window.scrollY > 0 || e.touches.length > 1) { startY = null; return; }
+    if (!state.token || state.refreshing || window.scrollY > 0 || e.touches.length > 1 || $('dialog[open]')) { startY = null; return; }
     if (e.target.closest('.chips, textarea')) { startY = null; return; }
     startY = e.touches[0].clientY;
     pulled = 0;
@@ -806,13 +1370,21 @@ window.addEventListener('scroll', releaseTilt, { passive: true });
 /* ---------- Setup / key ---------- */
 function defaultRepo() {
   const host = location.hostname;
-  if (host.endsWith('.github.io')) return host.split('.')[0] + '/tays-brain-data';
-  return '';
+  return host.endsWith('.github.io') ? host.split('.')[0] + '/tays-brain-data' : '';
 }
-
+function renderMosaic() {
+  const m = $('#mosaic');
+  if (m.childElementCount) return;
+  ['sports-business', 'time-freedom', 'future-of-work', 'money', 'thoughts', 'skills'].forEach((f, i) => {
+    const t = artEl(f, 'mosaic-' + f, 'tile');
+    t.style.setProperty('--i', String(i));
+    m.append(t);
+  });
+}
 function clearRenderedData() {
-  ['#feed-latest', '#feed-older', '#feed-status', '#saved-list', '#thoughts-list', '#sources-list', '#chips']
+  ['#feed-latest', '#feed-older', '#feed-status', '#saved-list', '#status-chips', '#thoughts-list', '#sources-list', '#chips']
     .forEach((s) => $(s).replaceChildren());
+  $$('dialog[open]').forEach((d) => d.close());
 }
 
 function showSetup({ keepData = false } = {}) {
@@ -821,6 +1393,7 @@ function showSetup({ keepData = false } = {}) {
   } else {
     store.wipe();
     state.saved = {};
+    state.closeQueue = [];
     state.read = new Set();
     state.name = '';
   }
@@ -836,6 +1409,7 @@ function showSetup({ keepData = false } = {}) {
   clearRenderedData();
   $('#app').hidden = true;
   $('#setup').hidden = false;
+  renderMosaic();
   $('#setup-name').value = state.name || '';
   $('#setup-repo').value = state.repo || store.get('repo') || defaultRepo();
   $('#setup-token').value = '';
@@ -843,11 +1417,20 @@ function showSetup({ keepData = false } = {}) {
   if (!keepData) state.repo = null;
   history.replaceState(null, '', location.pathname + location.search);
 }
-
 function setupError(msg) {
   const e = $('#setup-error');
   e.textContent = msg;
   e.hidden = false;
+}
+function loadLocalState() {
+  const saved = store.get('saved', {}) || {};
+  for (const s of Object.values(saved)) {
+    s.note = { ...blankNote(), ...(s.note || {}) };
+    if (!('issue' in s)) { s.issue = null; s.dirty = true; } // saved before notes existed
+  }
+  state.saved = saved;
+  state.closeQueue = store.get('closeQueue', []) || [];
+  state.read = new Set(store.get('read', []) || []);
 }
 
 $('#setup-form').addEventListener('submit', async (e) => {
@@ -874,8 +1457,7 @@ $('#setup-form').addEventListener('submit', async (e) => {
     store.set('token', token);
     store.set('repo', repo);
     store.set('name', name);
-    state.saved = store.get('saved', {}) || {};
-    state.read = new Set(store.get('read', []) || []);
+    loadLocalState();
     $('#setup-token').value = '';
     showApp();
   } catch (err) {
@@ -890,7 +1472,7 @@ $('#setup-form').addEventListener('submit', async (e) => {
 });
 
 $('#forget-key').addEventListener('click', () => {
-  if (window.confirm('Forget your key? This also clears your saved cards and read history on this phone.')) {
+  if (window.confirm('Forget your key? This also clears saved cards and read history on this phone. Your notes stay in your data repo.')) {
     showSetup();
     toast('Key forgotten');
   }
@@ -923,8 +1505,7 @@ function boot() {
     showSetup({ keepData: !!store.get('saved') });
     return;
   }
-  state.saved = store.get('saved', {}) || {};
-  state.read = new Set(store.get('read', []) || []);
+  loadLocalState();
   const cache = store.get('cache');
   if (cache) {
     state.cards = normalizeCards(cache.cards);
@@ -939,7 +1520,6 @@ function boot() {
 
 window.addEventListener('hashchange', route);
 document.addEventListener('visibilitychange', () => {
-  // Coming back to the app after a while: refresh quietly.
   if (document.visibilityState === 'visible' && state.token && state.syncedAt &&
       Date.now() - new Date(state.syncedAt).getTime() > 10 * 60 * 1000) {
     loadAll({ quiet: true });

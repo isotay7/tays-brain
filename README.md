@@ -24,8 +24,12 @@ The app never stores the key anywhere but the device. **Forget key** in Settings
 ```
 feed/cards.json    [{ id, field, headline, why, source, url, drop, createdAt }]
 feed/sources.json  { "<field id>": [{ name, url, why }] }
-issues labeled "thought"   your posted thoughts; replies are issue comments
+issues labeled "thought"     your posted thoughts; replies are issue comments
+issues labeled "link"        links you add with +; the sweep turns them into cards
+issues labeled "card-note"   one per saved card: status + why/learned/apply notes
 ```
+
+`card-note` and `link` issue bodies are readable markdown, plus a machine-readable JSON copy in an HTML comment (`<!-- tb-card-note {...} -->`, `<!-- tb-link {...} -->`).
 
 Field ids: `time-freedom`, `future-of-work`, `money`, `sports-business`, `skills`, `thoughts`.
 `drop` is a `YYYY-MM-DD` date. The newest drop is the feed, and older drops collapse below it.
@@ -39,4 +43,4 @@ Field ids: `time-freedom`, `future-of-work`, `money`, `sports-business`, `skills
 | `app.js` | GitHub API, rendering, gestures (bump `APP_VERSION` on change) |
 | `sw.js` | Offline shell cache (bump `CACHE` on change). Never caches API data. |
 | `manifest.webmanifest`, `icons/` | Home-screen install |
-| `fonts/` | Big Shoulders Display and Figtree (SIL Open Font License) |
+| `fonts/` | Bricolage Grotesque and Instrument Sans (SIL Open Font License) |

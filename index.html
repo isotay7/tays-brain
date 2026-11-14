@@ -8,37 +8,29 @@
 <meta name="robots" content="noindex">
 <title>Tay's Brain</title>
 <meta name="description" content="A private feed that ends.">
-<meta name="theme-color" content="#0d0a1c">
+<meta name="theme-color" content="#fbfaf8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131218" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Brain">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
-<link rel="preload" href="fonts/big-shoulders.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="fonts/figtree.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/bricolage.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/instrument-sans.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="styles.css">
 <script src="app.js" defer></script>
 </head>
 <body>
 
-<div class="sky" aria-hidden="true">
-  <div class="blob blob-a"></div>
-  <div class="blob blob-b"></div>
-  <div class="blob blob-c"></div>
-  <div class="grain"></div>
-</div>
-
 <!-- Setup: the only thing rendered without a key -->
 <section id="setup" class="setup" hidden>
   <div class="setup-inner">
-    <svg class="ridge ridge-setup" viewBox="0 0 400 90" preserveAspectRatio="none" aria-hidden="true">
-      <path class="ridge-far" d="M0 52 L40 38 L78 46 L112 26 L150 40 L190 20 L232 36 L268 18 L310 34 L350 24 L400 34 L400 90 L0 90Z"/>
-      <path class="ridge-near" d="M0 72 L52 58 L96 66 L140 50 L188 62 L236 52 L282 64 L330 54 L400 62 L400 90 L0 90Z"/>
-    </svg>
-    <h1 class="setup-title">Your brain,<br>on your phone.</h1>
-    <p class="setup-lede">Cards arrive every other day from sources you trust. Read them, save the good ones, and you're done.</p>
+    <div class="mosaic" id="mosaic" aria-hidden="true"></div>
+    <h1 class="setup-title">Your brain, on your phone.</h1>
+    <p class="setup-lede">Ten cards every other day from sources you trust. Read them, keep the good ones, and you're done.</p>
 
     <form id="setup-form" class="setup-form" autocomplete="off" novalidate>
       <label class="field">
@@ -79,10 +71,6 @@
     <!-- Feed -->
     <section class="view" id="view-feed" data-view="feed">
       <header class="hero">
-        <svg class="ridge" viewBox="0 0 400 90" preserveAspectRatio="none" aria-hidden="true">
-          <path class="ridge-far" d="M0 52 L40 38 L78 46 L112 26 L150 40 L190 20 L232 36 L268 18 L310 34 L350 24 L400 34 L400 90 L0 90Z"/>
-          <path class="ridge-near" d="M0 72 L52 58 L96 66 L140 50 L188 62 L236 52 L282 64 L330 54 L400 62 L400 90 L0 90Z"/>
-        </svg>
         <p class="hero-date" id="hero-date"></p>
         <h1 class="hero-greeting" id="greeting">Good evening</h1>
         <p class="hero-sub" id="hero-sub"></p>
@@ -107,13 +95,17 @@
 
     <!-- Saved -->
     <section class="view" id="view-saved" data-view="saved" hidden>
-      <header class="page-head"><h1>Saved</h1><p id="saved-count"></p></header>
+      <header class="page-head">
+        <h1>Saved</h1>
+        <p id="saved-progress" class="progress-line"></p>
+      </header>
+      <nav class="chips" id="status-chips" aria-label="Filter by status"></nav>
       <div id="saved-list" class="cards"></div>
     </section>
 
     <!-- Thoughts -->
     <section class="view" id="view-thoughts" data-view="thoughts" hidden>
-      <header class="page-head"><h1>Thoughts</h1><p>Drop one in. The Brain answers on its next sweep.</p></header>
+      <header class="page-head"><h1>Thoughts</h1><p>Your ideas and links. The Brain answers on its next sweep.</p></header>
       <div class="composer-slot" data-composer></div>
       <div id="thoughts-list" class="thoughts"></div>
     </section>
@@ -128,14 +120,14 @@
     <section class="view" id="view-settings" data-view="settings" hidden>
       <header class="page-head"><h1>Settings</h1></header>
       <div class="settings">
-        <form class="glass setting" id="name-form">
+        <form class="panel setting" id="name-form">
           <label class="field">
             <span class="field-label">Your name</span>
             <input id="set-name" type="text" maxlength="30" autocapitalize="words">
           </label>
           <button class="btn btn-quiet" type="submit">Save name</button>
         </form>
-        <div class="glass setting">
+        <div class="panel setting">
           <div class="setting-row">
             <div>
               <p class="setting-title">GitHub key</p>
@@ -146,13 +138,13 @@
           <div class="setting-row">
             <div>
               <p class="setting-title">Data repo</p>
-              <p class="setting-sub mono-ish" id="repo-status"></p>
+              <p class="setting-sub" id="repo-status"></p>
             </div>
           </div>
           <button class="btn btn-danger" type="button" id="forget-key">Forget key</button>
-          <p class="setting-hint">Forgetting the key also clears your saved cards and read history from this phone.</p>
+          <p class="setting-hint">Forgetting the key also clears saved cards and read history from this phone. Your notes stay safe in your data repo.</p>
         </div>
-        <div class="glass setting">
+        <div class="panel setting">
           <div class="setting-row">
             <div>
               <p class="setting-title">App version</p>
@@ -165,24 +157,84 @@
     </section>
   </main>
 
+  <button class="fab" id="fab" type="button" aria-label="Add a link">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+
   <nav class="tabbar" aria-label="Sections">
-    <a href="#feed" data-tab="feed" aria-label="Feed">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16M4 12h16M4 18.5h10"/></svg><span>Feed</span>
+    <a href="#feed" data-tab="feed">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="7" rx="2.5"/><rect x="4" y="14" width="16" height="6" rx="2.5"/></svg><span>Feed</span>
     </a>
-    <a href="#saved" data-tab="saved" aria-label="Saved">
+    <a href="#saved" data-tab="saved">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3.5h11v17l-5.5-4-5.5 4z"/></svg><span>Saved</span>
     </a>
-    <a href="#thoughts" data-tab="thoughts" aria-label="Thoughts">
+    <a href="#thoughts" data-tab="thoughts">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 5.5h15v10h-8l-4.5 3.5v-3.5h-2.5z"/></svg><span>Thoughts</span>
       <i class="tab-badge" id="thoughts-badge" hidden></i>
     </a>
-    <a href="#sources" data-tab="sources" aria-label="Sources">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h5.5a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H5zM19 4.5h-5.5a1 1 0 0 0-1 1"/><path d="M19 4.5v13h-5.5a1 1 0 0 0-1 1"/></svg><span>Sources</span>
+    <a href="#sources" data-tab="sources">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6.5c-1.6-1.4-4-2-7-2v13c3 0 5.4.6 7 2 1.6-1.4 4-2 7-2v-13c-3 0-5.4.6-7 2zM12 6.5v13"/></svg><span>Sources</span>
     </a>
-    <a href="#settings" data-tab="settings" aria-label="Settings">
+    <a href="#settings" data-tab="settings">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.6M12 18.6v2.6M21.2 12h-2.6M5.4 12H2.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8M18.5 18.5l-1.8-1.8M7.3 7.3 5.5 5.5"/></svg><span>Settings</span>
     </a>
   </nav>
+
+  <!-- Saved card detail sheet -->
+  <dialog class="sheet" id="note-sheet" aria-labelledby="note-headline">
+    <div class="sheet-grip" data-grip aria-hidden="true"></div>
+    <div class="sheet-art" id="note-art" aria-hidden="true"></div>
+    <div class="sheet-body">
+      <p class="tag" id="note-tag"><i class="tag-dot"></i><span class="tag-name"></span></p>
+      <h2 class="sheet-headline" id="note-headline"></h2>
+      <a class="card-source" id="note-source" target="_blank" rel="noopener noreferrer"></a>
+
+      <div class="status-track" id="note-status" role="radiogroup" aria-label="Status"></div>
+
+      <label class="note-field">
+        <span>Why I saved it</span>
+        <textarea id="note-why" rows="2" maxlength="600" placeholder="What made you keep this one?"></textarea>
+      </label>
+      <label class="note-field">
+        <span>What I learned</span>
+        <textarea id="note-learned" rows="2" maxlength="600" placeholder="The one idea worth remembering"></textarea>
+      </label>
+      <label class="note-field">
+        <span>How I'll apply it</span>
+        <textarea id="note-apply" rows="2" maxlength="600" placeholder="One move you'll make this week"></textarea>
+      </label>
+
+      <div class="sheet-foot">
+        <p class="sync-state" id="note-sync" role="status"></p>
+        <button class="btn btn-primary btn-small" type="button" data-close>Done</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Add a link sheet -->
+  <dialog class="sheet" id="link-sheet" aria-labelledby="link-title">
+    <div class="sheet-grip" data-grip aria-hidden="true"></div>
+    <form class="sheet-body" id="link-form" novalidate>
+      <h2 class="sheet-headline" id="link-title">Add a link</h2>
+      <p class="sheet-lede">The Brain reads it and turns it into a card in your next drop.</p>
+      <label class="note-field">
+        <span>Link</span>
+        <div class="url-row">
+          <input id="link-url" type="url" inputmode="url" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="https://…" required>
+          <button class="btn btn-quiet btn-small" type="button" id="link-paste" hidden>Paste</button>
+        </div>
+      </label>
+      <label class="note-field">
+        <span>Why it caught your eye <em>(optional)</em></span>
+        <textarea id="link-note" rows="3" maxlength="800" placeholder="What made you stop scrolling?"></textarea>
+      </label>
+      <p id="link-error" class="form-error" role="alert" hidden></p>
+      <div class="sheet-foot">
+        <button class="btn btn-quiet btn-small" type="button" data-close>Cancel</button>
+        <button class="btn btn-primary btn-small" type="submit" id="link-submit">Send to the Brain</button>
+      </div>
+    </form>
+  </dialog>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 </div>
@@ -198,22 +250,25 @@
 
 <template id="tpl-card">
   <article class="card">
-    <div class="card-glow" aria-hidden="true"></div>
-    <p class="tag"><i class="tag-dot"></i><span class="tag-name"></span></p>
-    <h3 class="card-headline"></h3>
-    <p class="card-why-label">Why it matters to you</p>
-    <p class="card-why"></p>
-    <footer class="card-foot">
-      <a class="card-source" target="_blank" rel="noopener noreferrer"></a>
-      <div class="card-actions">
-        <button class="icon-btn read-btn" type="button" aria-pressed="false" aria-label="Mark read">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 10 17.5 19.5 7"/></svg>
-        </button>
-        <button class="icon-btn save-btn" type="button" aria-pressed="false" aria-label="Save">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3.5h11v17l-5.5-4-5.5 4z"/></svg>
-        </button>
-      </div>
-    </footer>
+    <div class="card-art" aria-hidden="true"></div>
+    <div class="card-body">
+      <p class="tag"><i class="tag-dot"></i><span class="tag-name"></span></p>
+      <h3 class="card-headline"></h3>
+      <p class="card-why-label">Why it matters to you</p>
+      <p class="card-why"></p>
+      <footer class="card-foot">
+        <a class="card-source" target="_blank" rel="noopener noreferrer"></a>
+        <div class="card-actions">
+          <button class="status-chip" type="button" hidden></button>
+          <button class="icon-btn read-btn" type="button" aria-pressed="false" aria-label="Mark read">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 10 17.5 19.5 7"/></svg>
+          </button>
+          <button class="icon-btn save-btn" type="button" aria-pressed="false" aria-label="Save">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3.5h11v17l-5.5-4-5.5 4z"/></svg>
+          </button>
+        </div>
+      </footer>
+    </div>
   </article>
 </template>
 
