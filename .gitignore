@@ -1,0 +1,9 @@
+# Private, local-only stuff. Never published.
+library/
+ideas/
+digests/
+CLAUDE.md
+import.html
+.claude/
+.env*
+*.local.*

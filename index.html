@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src https://api.github.com; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>Tay's Brain</title>
+<meta name="description" content="A private feed that ends.">
+<meta name="theme-color" content="#0d0a1c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Brain">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="preload" href="fonts/big-shoulders.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/figtree.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+
+<div class="sky" aria-hidden="true">
+  <div class="blob blob-a"></div>
+  <div class="blob blob-b"></div>
+  <div class="blob blob-c"></div>
+  <div class="grain"></div>
+</div>
+
+<!-- Setup: the only thing rendered without a key -->
+<section id="setup" class="setup" hidden>
+  <div class="setup-inner">
+    <svg class="ridge ridge-setup" viewBox="0 0 400 90" preserveAspectRatio="none" aria-hidden="true">
+      <path class="ridge-far" d="M0 52 L40 38 L78 46 L112 26 L150 40 L190 20 L232 36 L268 18 L310 34 L350 24 L400 34 L400 90 L0 90Z"/>
+      <path class="ridge-near" d="M0 72 L52 58 L96 66 L140 50 L188 62 L236 52 L282 64 L330 54 L400 62 L400 90 L0 90Z"/>
+    </svg>
+    <h1 class="setup-title">Your brain,<br>on your phone.</h1>
+    <p class="setup-lede">Cards arrive every other day from sources you trust. Read them, save the good ones, and you're done.</p>
+
+    <form id="setup-form" class="setup-form" autocomplete="off" novalidate>
+      <label class="field">
+        <span class="field-label">What should I call you?</span>
+        <input id="setup-name" type="text" maxlength="30" autocapitalize="words" placeholder="Your first name" required>
+      </label>
+      <label class="field">
+        <span class="field-label">GitHub key</span>
+        <input id="setup-token" type="password" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="github_pat_…" required>
+      </label>
+      <label class="field">
+        <span class="field-label">Data repo</span>
+        <input id="setup-repo" type="text" spellcheck="false" autocapitalize="off" autocorrect="off" placeholder="owner/tays-brain-data" required>
+      </label>
+      <p id="setup-error" class="setup-error" role="alert" hidden></p>
+      <button class="btn btn-primary" type="submit" id="setup-submit">Unlock my feed</button>
+      <p class="setup-note">Your key stays on this phone. It's never sent anywhere except GitHub.</p>
+    </form>
+
+    <details class="guide">
+      <summary>How to make the key (2 minutes)</summary>
+      <ol>
+        <li>Open <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">GitHub's new fine-grained token page</a> and sign in.</li>
+        <li>Name it something like <b>Brain on my iPhone</b> and pick an expiration. 90 days is fine. When it runs out, the app tells you.</li>
+        <li>Under <b>Repository access</b>, choose <b>Only select repositories</b> and pick your <b>tays-brain-data</b> repo. Nothing else.</li>
+        <li>Under <b>Permissions</b>, set <b>Contents</b> to Read-only and <b>Issues</b> to Read and write. GitHub adds Metadata automatically.</li>
+        <li>Tap <b>Generate token</b>, copy it, and paste it above. GitHub only shows it once.</li>
+      </ol>
+    </details>
+  </div>
+</section>
+
+<!-- The app -->
+<div id="app" class="app" hidden>
+  <div id="ptr" class="ptr" aria-hidden="true"><div class="ptr-ring"></div></div>
+
+  <main id="views">
+    <!-- Feed -->
+    <section class="view" id="view-feed" data-view="feed">
+      <header class="hero">
+        <svg class="ridge" viewBox="0 0 400 90" preserveAspectRatio="none" aria-hidden="true">
+          <path class="ridge-far" d="M0 52 L40 38 L78 46 L112 26 L150 40 L190 20 L232 36 L268 18 L310 34 L350 24 L400 34 L400 90 L0 90Z"/>
+          <path class="ridge-near" d="M0 72 L52 58 L96 66 L140 50 L188 62 L236 52 L282 64 L330 54 L400 62 L400 90 L0 90Z"/>
+        </svg>
+        <p class="hero-date" id="hero-date"></p>
+        <h1 class="hero-greeting" id="greeting">Good evening</h1>
+        <p class="hero-sub" id="hero-sub"></p>
+      </header>
+
+      <div class="composer-slot" data-composer></div>
+
+      <nav class="chips" id="chips" aria-label="Filter by field"></nav>
+
+      <div id="feed-status" class="status" role="status"></div>
+      <div id="feed-latest" class="cards"></div>
+      <div id="caught-up" class="caught-up" hidden>
+        <svg class="caught-check" viewBox="0 0 64 64" aria-hidden="true">
+          <circle cx="32" cy="32" r="28"/>
+          <path d="M20 33 L28 41 L45 24"/>
+        </svg>
+        <h2>You're caught up</h2>
+        <p id="caught-text"></p>
+      </div>
+      <div id="feed-older" class="older"></div>
+    </section>
+
+    <!-- Saved -->
+    <section class="view" id="view-saved" data-view="saved" hidden>
+      <header class="page-head"><h1>Saved</h1><p id="saved-count"></p></header>
+      <div id="saved-list" class="cards"></div>
+    </section>
+
+    <!-- Thoughts -->
+    <section class="view" id="view-thoughts" data-view="thoughts" hidden>
+      <header class="page-head"><h1>Thoughts</h1><p>Drop one in. The Brain answers on its next sweep.</p></header>
+      <div class="composer-slot" data-composer></div>
+      <div id="thoughts-list" class="thoughts"></div>
+    </section>
+
+    <!-- Sources -->
+    <section class="view" id="view-sources" data-view="sources" hidden>
+      <header class="page-head"><h1>Sources</h1><p>Where the Brain reads, by field.</p></header>
+      <div id="sources-list" class="sources"></div>
+    </section>
+
+    <!-- Settings -->
+    <section class="view" id="view-settings" data-view="settings" hidden>
+      <header class="page-head"><h1>Settings</h1></header>
+      <div class="settings">
+        <form class="glass setting" id="name-form">
+          <label class="field">
+            <span class="field-label">Your name</span>
+            <input id="set-name" type="text" maxlength="30" autocapitalize="words">
+          </label>
+          <button class="btn btn-quiet" type="submit">Save name</button>
+        </form>
+        <div class="glass setting">
+          <div class="setting-row">
+            <div>
+              <p class="setting-title">GitHub key</p>
+              <p class="setting-sub" id="key-status">Saved on this phone</p>
+            </div>
+            <span class="key-dot" aria-hidden="true"></span>
+          </div>
+          <div class="setting-row">
+            <div>
+              <p class="setting-title">Data repo</p>
+              <p class="setting-sub mono-ish" id="repo-status"></p>
+            </div>
+          </div>
+          <button class="btn btn-danger" type="button" id="forget-key">Forget key</button>
+          <p class="setting-hint">Forgetting the key also clears your saved cards and read history from this phone.</p>
+        </div>
+        <div class="glass setting">
+          <div class="setting-row">
+            <div>
+              <p class="setting-title">App version</p>
+              <p class="setting-sub" id="app-version"></p>
+            </div>
+            <button class="btn btn-quiet btn-small" type="button" id="refresh-btn">Refresh now</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar" aria-label="Sections">
+    <a href="#feed" data-tab="feed" aria-label="Feed">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16M4 12h16M4 18.5h10"/></svg><span>Feed</span>
+    </a>
+    <a href="#saved" data-tab="saved" aria-label="Saved">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3.5h11v17l-5.5-4-5.5 4z"/></svg><span>Saved</span>
+    </a>
+    <a href="#thoughts" data-tab="thoughts" aria-label="Thoughts">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 5.5h15v10h-8l-4.5 3.5v-3.5h-2.5z"/></svg><span>Thoughts</span>
+      <i class="tab-badge" id="thoughts-badge" hidden></i>
+    </a>
+    <a href="#sources" data-tab="sources" aria-label="Sources">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h5.5a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H5zM19 4.5h-5.5a1 1 0 0 0-1 1"/><path d="M19 4.5v13h-5.5a1 1 0 0 0-1 1"/></svg><span>Sources</span>
+    </a>
+    <a href="#settings" data-tab="settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.6M12 18.6v2.6M21.2 12h-2.6M5.4 12H2.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8M18.5 18.5l-1.8-1.8M7.3 7.3 5.5 5.5"/></svg><span>Settings</span>
+    </a>
+  </nav>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</div>
+
+<template id="tpl-composer">
+  <form class="composer" data-composer-form>
+    <textarea rows="1" maxlength="2000" placeholder="Drop a thought…" aria-label="Drop a thought" data-composer-input></textarea>
+    <button class="composer-send" type="submit" aria-label="Send thought" disabled data-composer-send>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>
+    </button>
+  </form>
+</template>
+
+<template id="tpl-card">
+  <article class="card">
+    <div class="card-glow" aria-hidden="true"></div>
+    <p class="tag"><i class="tag-dot"></i><span class="tag-name"></span></p>
+    <h3 class="card-headline"></h3>
+    <p class="card-why-label">Why it matters to you</p>
+    <p class="card-why"></p>
+    <footer class="card-foot">
+      <a class="card-source" target="_blank" rel="noopener noreferrer"></a>
+      <div class="card-actions">
+        <button class="icon-btn read-btn" type="button" aria-pressed="false" aria-label="Mark read">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 10 17.5 19.5 7"/></svg>
+        </button>
+        <button class="icon-btn save-btn" type="button" aria-pressed="false" aria-label="Save">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 3.5h11v17l-5.5-4-5.5 4z"/></svg>
+        </button>
+      </div>
+    </footer>
+  </article>
+</template>
+
+</body>
+</html>
